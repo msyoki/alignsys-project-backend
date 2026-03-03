@@ -1,0 +1,37 @@
+
+{% extends 'password/base.html' %}
+{% load static %}
+{% block content %}
+
+
+
+	<div class='row'>
+		<div class="mx-auto col-8 col-md-6 col-lg-4 " style="margin-top: 10%;">
+	
+			
+			<div class="bg-white p-5 text-dark text-center">
+				<img src="{% static 'images/techedge.png' %}" width="200px" class="img-fluid mb-2" alt="Sample image" />
+				<h6 className="text-center  mt-3 mb-5  p-3 shadow-lg " style="color: #174291;" ><span>PASSWORD RESET COMPLETE</span></h6>
+			
+
+			
+			<hr>
+			
+			<div class="container ">
+				<small >
+					 Your password has been set. You may go ahead and log in now. 
+				</small>
+				
+			</div>
+			<div class="text-center">
+				<a href="https://dsscorpdevsdk.techedge.dev/login" class=' btn btn-primary mt-4'><small >Back to Login?</small></a>
+			</div>
+		
+			</div> 
+		</div> 
+	</div>
+
+
+            
+{% endblock %}
+

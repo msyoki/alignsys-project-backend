@@ -1,0 +1,62 @@
+{% extends 'password/base.html' %}
+{% load crispy_forms_tags %}
+{% load widget_tweaks %}
+{% load static %}
+{% block content %}
+
+
+
+	
+			<div class='row'>
+				<div class="mx-auto col-8 col-md-6 col-lg-4 " style="margin-top: 10%;">
+			
+				<form method="POST" action="" class="bg-white p-5 text-dark text-center">
+					{% csrf_token %}
+					<img src="{% static 'images/techedge.png' %}" width="200px" class="img-fluid mb-2" alt="Sample image" />
+							<h6 className="text-center  mt-3 mb-5  p-3 shadow-lg " style="color: #174291;" ><span>PASSWORD RESET CONFIRM</span></h6>
+						
+				
+				
+				   <hr>
+				   
+				 
+				   <div class="form-group mb-4 mt-3">
+					<label for="password" style="font-size: small;"><small>New Password</small></label>
+					 <div class="input-group mt-1">
+						
+						 <span class="input-group-text " id="basic-addon2">
+							 <span class=" fas fa-key"></span>
+							
+						 </span>
+						 {% render_field form.new_password1  class="form-control form-control-sm"  placeholder="New Password" %} 
+						
+					 </div>  
+			
+					 <small class="text-danger "><small>{{ form.new_password1.errors }} </small></small>
+					 <label for="password" style="font-size: small;"><small>Confirm Password</small></label>
+					 <div class="input-group mt-1">
+						
+						<span class="input-group-text " id="basic-addon2">
+							<span class=" fas fa-key"></span>
+						</span>
+						{% render_field form.new_password2  class="form-control form-control-sm"  placeholder="Confirm Password" %} 
+						
+					</div> 
+				
+						<small class="text-danger small "><small>{{ form.new_password2.errors }}</small> </small>
+				   </div>
+				   <div class="text-center text-lg-start mt-4 pt-2 mb-5">
+					 <div>
+						 <button type="submit" name="register" class="button3 btn-warning" >Change Password</button>
+					 </div>
+				   </div>
+				   <div class="text-center">
+					 <a href='https://dsscorpdevsdk.techedge.dev/login' class=' btn btn-primary'><small >Back to Login?</small></a>
+				   </div>
+			 
+				</form>
+				</div>
+			</div>
+		
+	
+{% endblock %}

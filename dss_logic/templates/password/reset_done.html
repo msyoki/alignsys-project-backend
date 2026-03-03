@@ -1,0 +1,57 @@
+{% extends 'password/base.html' %}
+{% load static %}
+{% load widget_tweaks %}
+
+{% block content %}
+
+
+
+	
+	<div class='row'>
+      <div class="mx-auto col-8 col-md-6 col-lg-4 " style="margin-top: 10%;">
+		<form method="POST" action="" class="bg-white p-5 text-dark text-center">
+			
+      <img src="{% static 'images/techedge.png' %}" width="200px" class="img-fluid mb-2" alt="Sample image" />
+			<h6 className="text-center  mt-3 mb-5  p-3 shadow-lg " style="color: #174291;" ><span>PASSWORD RESET SENT</span></h6>
+         
+
+		  
+		   <hr>
+		   <div class="form-group mb-4 mt-3">
+		   
+			 <div class="input-group mt-2">
+               <div class="container ">
+                    
+                    <div >
+                        <small >
+                          
+                            We've emailed you instructions for setting your password, 
+                            if an account exists with the email you entered.
+                                You should receive them shortly.   If you don't receive an email, 
+                                please make sure you've entered the address you registered with,
+                                    and check your spam folder.
+                
+                          
+                            
+                        </small>
+                    </div>
+                    <div class="col-2"></div>
+               </div>
+		
+			 </div>  
+		   </div>
+
+		   <div class="text-center">
+			 <a href="{% url 'reset_password' %}" class=' btn btn-warning'><small >Try another address?</small></a>
+		   </div>
+         <br/><br/><br/>
+         <div class="text-center mx-3">
+            <a href='https://dsscorpdevsdk.techedge.dev/login' class=' btn btn-primary'><small >Back to Login?</small></a>
+           </div>
+	 
+		</form>
+   </div>
+	</div>
+
+           
+{% endblock %}
