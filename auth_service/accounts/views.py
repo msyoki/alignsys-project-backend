@@ -88,6 +88,9 @@ from .utils import (
     normalize_subscription_status,
     determine_subscription_event
 )
+from django.shortcuts import get_object_or_404
+from .services.license_service import LicenseService
+from rest_framework.response import Response
 from .authentication import JWTAuthentication, build_user_payload, get_tokens_for_user
 
 User = get_user_model()
@@ -103,15 +106,17 @@ class CurrentUserView(APIView):
     def get(self, request):
         user = request.user
         return Response({
-            "id": user.id,
-            "email": user.email,
-            "username": user.username,
-            "first_name": user.first_name,
-            "last_name": user.last_name,
-            "is_active": user.is_active,
+            "id": user.id if hasattr(user, "id") else None,
+            "email": user.email if hasattr(user, "email") else None,
+            "phone": user.phone if hasattr(user, "phone") else None ,
+            "username": user.username if hasattr(user, "username") else None,
+            "first_name": user.first_name if hasattr(user, "first_name") else None,
+            "last_name": user.last_name if hasattr(user, "last_name") else None,
+            "is_active": user.is_active if hasattr(user, "is_active") else None,
             "is_admin": getattr(user, "is_admin", False),
+            "is_super_admin" : getattr(user, "is_super_admin", False),
+            "profile": getattr(user, "profile_id", None),
             # add any other claims your documents project expects
-            "company": getattr(user, "company_id", None),
         })
 
 # ============================================================================
@@ -232,7 +237,14 @@ def login_view(request):
         )
     
     # Get the subscription safely
-    subscription = getattr(user.profile, 'subscription', None)
+    
+    subscription = user.profile.subscriptions.filter(
+        status__in=[
+            SubscriptionStatus.ACTIVE,
+            SubscriptionStatus.TRIALING,
+            SubscriptionStatus.PAST_DUE,  # optional depending on your logic
+        ]
+    ).first()
 
     # Check if subscription exists and is active
     if not subscription or subscription.status not in ['active', 'trialing']:
@@ -513,7 +525,6 @@ def register_view(request):
                 status=status.HTTP_409_CONFLICT
             )
     
-
     # Randonmly generate username if taken
     username = generate_unique_username(data['first_name'], data['last_name'])
 
@@ -530,14 +541,13 @@ def register_view(request):
         except ValueError:
             user_type = UserType.INDIVIDUAL
 
-    # Create Profile
+    # Prepare profile instance (not saved yet)
     profile_name = (
         f"{data['first_name'].strip()} {data['last_name'].strip()}"
         if user_type == UserType.INDIVIDUAL
         else data.get('org_name', '').strip()
     )
-
-    profile = Profile.objects.create(
+    profile = Profile(
         name=profile_name,
         type=user_type,
         org_name=data.get('org_name') if user_type == UserType.ORGANIZATION else None
@@ -592,30 +602,28 @@ def register_view(request):
     # if subscription_status == SubscriptionStatus.TRIALING:
     #     create_trial_history(profile, plan_name, subscription)
 
-    # Create User (inactive until email verified)
-    username=generate_unique_username(data['first_name'], data['last_name'])
-    user = User.objects.create_user(
+
+    # Prepare user instance (not saved yet)
+    user = User(
         email=email,
         username=username,
-        password=data['password'],
         first_name=data['first_name'].strip(),
         last_name=data['last_name'].strip(),
+        password=data['password'],  # Will be hashed by set_password below
         is_domain_user=data.get('is_domain_user', False),
         domain=data.get('domain'),
         profile=profile,
         is_admin=user_type == UserType.ORGANIZATION,
         is_active=False  # User inactive until email verified
     )
+    user.set_password(data['password'])
 
-   
     # Generate verification token
     verification_token = get_random_string(64)
     token_expiry = timezone.now() + timedelta(hours=24)
-    
-    # Store verification token
     user.email_verification_token = verification_token
     user.email_verification_token_expires = token_expiry
-    user.save()
+  
 
     # Send verification email
     try:
@@ -652,7 +660,10 @@ def register_view(request):
             fail_silently=False,
         )
         
+        
         logger.info(f"Verification email sent successfully to {user.email}")
+        profile.save()
+        user.save()
         
     except Exception as e:
         # If email fails to send, rollback the transaction
@@ -757,12 +768,15 @@ def verify_email_view(request):
                 {"detail": "Email already verified"},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
+   
         # Activate user account
         user.is_active = True
         user.email_verified = True
         user.email_verification_token = None
         user.email_verification_token_expires = None
+        user.has_license = True  # Optionally assign a default license upon verification
+        user.license_assigned_at = timezone.now()  # Track when license was assigned
         user.save()
         
         logger.info(f"Email verified successfully for user: {user.email}")
@@ -1424,6 +1438,21 @@ This endpoint:
 
 ---
 
+### Allowed Billing Interval Values
+- `MONTHLY`
+- `YEARLY`
+
+---
+
+
+### Allowed Plan_name Values
+- `FREE_ESIGN`
+- `ESIGN`
+- `EDMS_PLUS`
+
+
+---
+
 ### Allowed Status Values
 - `INCOMPLETE`
 - `INCOMPLETE_EXPIRED`
@@ -1620,6 +1649,20 @@ def create_subscription_view(request):
     
     if data.get('pending_number_of_licenses'):
         subscription_data['pending_number_of_licenses'] = data['pending_number_of_licenses']
+
+    # Deactivate existing active/trialing subscriptions
+    Subscription.objects.filter(
+        profile=profile,
+        status__in=[
+            SubscriptionStatus.ACTIVE,
+            SubscriptionStatus.TRIALING,
+            # SubscriptionStatus.PAST_DUE,  # optional based on your business logic
+        ],
+    ).update(
+        status=SubscriptionStatus.CANCELED,
+        cancel_at=timezone.now(),
+        cancel_at_period_end=False,
+    )
     
     # Create Subscription
     subscription = Subscription.objects.create(**subscription_data)
@@ -1829,7 +1872,13 @@ def update_subscription_view(request):
 
     try:
         profile = Profile.objects.get(id=profile_id)
-        subscription = profile.subscription
+        subscription = profile.subscriptions.filter(
+            status__in=[
+                SubscriptionStatus.ACTIVE,
+                SubscriptionStatus.TRIALING,
+                SubscriptionStatus.PAST_DUE,  # optional
+            ]
+        ).first()
     except Profile.DoesNotExist:
         return Response({"detail": "Profile not found"}, status=status.HTTP_404_NOT_FOUND)
     except Subscription.DoesNotExist:
@@ -1949,10 +1998,15 @@ def update_trial_billing_preferences_stripe(request, subscription_id):
     """
 
     try:
-        subscription = Subscription.objects.get(id=subscription_id)
+        subscription = Subscription.objects.get(
+            id=subscription_id,
+            profile=request.user.profile
+        )
     except Subscription.DoesNotExist:
-        return Response({"detail": "Subscription not found"}, status=status.HTTP_404_NOT_FOUND)
-
+        return Response(
+            {"detail": "Subscription not found"},
+            status=status.HTTP_404_NOT_FOUND
+        )
     # Optional: verify Stripe signature here
 
     pending_interval = request.data.get("pending_billing_interval")
@@ -2216,6 +2270,8 @@ Update a subscription using either the Stripe subscription ID or the internal su
 
 **Authentication:** None required (public endpoint)
 
+
+
 **Request Body:**
 - `stripe_subscription_id` (string, required): Stripe subscription ID
 - `subscription_id` (string, required): Subscription ID - UUID
@@ -2230,6 +2286,35 @@ Update a subscription using either the Stripe subscription ID or the internal su
     - `trial_end` (datetime): Trial end date
     - `cancel_at` (datetime): Scheduled cancellation date
     - `cancel_at_period_end` (boolean): Cancel at period end
+
+
+
+---
+
+### Allowed Billing Interval Values
+- `MONTHLY`
+- `YEARLY`
+
+
+---
+
+
+### Allowed Plan_name Values
+- `FREE_ESIGN`
+- `ESIGN`
+- `EDMS_PLUS`
+
+
+---
+
+### Allowed Status Values
+- `INCOMPLETE`
+- `INCOMPLETE_EXPIRED`
+- `TRIALING`
+- `ACTIVE`
+- `PAST_DUE`
+- `CANCELED`
+- `UNPAID`
 """,
     request={
         "application/json": {
@@ -3027,7 +3112,26 @@ def add_org_user_view(request):
     """
     Add organization user (Admin only)
     """
+
+    # check if authenticated users account has an active subscription with available licenses before allowing to add user
+    active_sub = request.user.profile.subscriptions.filter(
+        status__in=[
+            SubscriptionStatus.ACTIVE,
+            SubscriptionStatus.TRIALING,
+            SubscriptionStatus.PAST_DUE,  # optional depending on your logic
+        ]
+    ).first()
+
+    # Check if there is an active subscription
+    if not active_sub:
+        return Response(
+            {'detail': 'Your organization does not have an active subscription. Please contact your administrator.'},
+            status=status.HTTP_403_FORBIDDEN
+        )
+
+
     data = request.data
+    
     # Normalize email / username
     email = data['email'].strip().lower()
 
@@ -3083,7 +3187,14 @@ def add_org_user_view(request):
             status=status.HTTP_400_BAD_REQUEST
         )
 
-    profile = get_object_or_404(Profile, id=profile_id)
+
+    try:
+        profile = Profile.objects.get(id=profile_id)
+    except Profile.DoesNotExist:
+        return Response(
+            {"detail": "Profile not found."},
+            status=status.HTTP_404_NOT_FOUND
+        )
 
     # ---- Ensure same organization (superuser exempt) ----
     if profile != request.user.profile and not request.user.is_superuser:
@@ -3093,8 +3204,12 @@ def add_org_user_view(request):
         )
 
     # ---- Create user ----
+    username = data.get('username', email.split('@')[0])  # Default to email prefix if username not provided
     try:
-        username=generate_unique_username(data['first_name'], data['last_name'])
+        # username=generate_unique_username(data['first_name'], data['last_name'])
+        assigned = profile.users.filter(has_license=True, is_active=True).count()
+       
+        total_licenses = active_sub.no_of_licenses if active_sub else 0
         user = User.objects.create_user(
             email=data['email'],
             username=username,
@@ -3104,6 +3219,8 @@ def add_org_user_view(request):
             profile=profile,
             is_admin=data.get('is_admin', False),
             is_active=True,
+            has_license=assigned < total_licenses,  # Assign license if available, else user will be created without license 
+            license_assigned_at=timezone.now() if assigned < total_licenses else None
         )
     except KeyError as e:
         return Response(
@@ -3150,9 +3267,7 @@ def add_org_user_view(request):
 # ============================================================================
 # SECTION 5: LICENSE MANAGEMENT VIEWS (Admin Only)
 # ============================================================================
-from django.shortcuts import get_object_or_404
-from .services.license_service import LicenseService
-from rest_framework.response import Response
+
 # ---- ASSIGN LICENSE ----
 @extend_schema(
     summary="Assign a license to a user",
@@ -3177,7 +3292,13 @@ def assign_license_view(request, user_id):
     if not request.user.is_admin:
         return Response({'detail': 'Only admins can assign licenses'}, status=status.HTTP_403_FORBIDDEN)
     
-    user = get_object_or_404(User, id=user_id)
+    try:
+        user = User.objects.get(id=user_id)
+    except User.DoesNotExist:
+        return Response(
+            {"detail": "User not found."},
+            status=status.HTTP_404_NOT_FOUND
+        )
     
     if user.profile != request.user.profile and not request.user.is_superuser:
         return Response(
@@ -3220,8 +3341,15 @@ def revoke_license_view(request, user_id):
     if not request.user.is_admin:
         return Response({'detail': 'Only admins can revoke licenses'}, status=status.HTTP_403_FORBIDDEN)
     
-    user = get_object_or_404(User, id=user_id)
-    
+
+    try:
+        user = User.objects.get(id=user_id)
+    except User.DoesNotExist:
+        return Response(
+            {"detail": "User not found."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+        
     if user.profile != request.user.profile and not request.user.is_superuser:
         return Response(
             {'detail': 'Can only manage licenses for users in your organization'}, 
@@ -3273,7 +3401,13 @@ def revoke_license_view(request, user_id):
 @permission_classes([IsAuthenticated])
 def license_status_view(request):
     profile = request.user.profile
-    subscription = profile.subscription
+    subscription = profile.subscriptions.filter(
+        status__in=[
+            SubscriptionStatus.ACTIVE,
+            SubscriptionStatus.TRIALING,
+            SubscriptionStatus.PAST_DUE,  # optional based on your rules
+        ]
+    ).first()
     
     if not subscription:
         return Response({'detail': 'No subscription found'}, status=status.HTTP_404_NOT_FOUND)
@@ -3592,151 +3726,74 @@ def update_stripe_subscription_id_view(request):
         },
         "updated_fields": ["stripe_subscription_id"]
     }, status=status.HTTP_200_OK)
-    """Update Subscription Fields - Public Endpoint"""
-    
-    # Validate subscription_id
-    subscription_id = request.data.get('subscription_id')
-    
-    if not subscription_id:
-        return Response(
-            {'detail': 'subscription_id is required'},
-            status=status.HTTP_400_BAD_REQUEST
-        )
-    
-    # Fetch subscription
+
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+@transaction.atomic
+def cancel_subscription_view(request, subscription_id):
+    """
+    Cancel a subscription.
+
+    Used when:
+    1. User manually cancels trial before it ends.
+    2. System cancels existing trial before creating a new subscription.
+    """
+
+    profile = request.user.profile
+
+    # Ensure subscription belongs to logged-in user's profile
     try:
-        subscription = Subscription.objects.get(id=subscription_id)
+        subscription = Subscription.objects.get(
+            id=subscription_id,
+            profile=profile
+        )
     except Subscription.DoesNotExist:
         return Response(
-            {'detail': 'Subscription not found'},
+            {"detail": "Subscription not found."},
             status=status.HTTP_404_NOT_FOUND
         )
-    except Exception as e:
+
+    # Prevent canceling already canceled subscriptions
+    if subscription.status in [
+        SubscriptionStatus.CANCELED,
+        SubscriptionStatus.INCOMPLETE_EXPIRED,
+    ]:
         return Response(
-            {'detail': f'Invalid subscription_id format: {str(e)}'},
+            {"detail": "Subscription is already canceled."},
             status=status.HTTP_400_BAD_REQUEST
         )
-    
-    # Define updatable fields (exclude auto-generated fields)
-    updatable_fields = [
-        'plan_name',
-        'no_of_licenses',
-        'status',
-        'billing_interval',
-        'pending_billing_interval',
-        'pending_number_of_licenses',
-        'trial_end',
-        'cancel_at',
-        'cancel_at_period_end',
-        'stripe_subscription_id',
-        'setup_intent_id',
-        'last_3day_reminder_sent',
-        'last_1day_reminder_sent'
-    ]
-    
-    # Track which fields were updated
-    updated_fields = []
-    
-    # Update fields that are present in request
-    for field in updatable_fields:
-        if field in request.data:
-            value = request.data[field]
-            
-            # Validate choice fields
-            if field == 'plan_name' and value not in dict(PlanName.choices):
-                return Response(
-                    {'detail': f'Invalid plan_name: {value}. Must be one of: {list(dict(PlanName.choices).keys())}'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
-            if field == 'status' and value not in dict(SubscriptionStatus.choices):
-                return Response(
-                    {'detail': f'Invalid status: {value}. Must be one of: {list(dict(SubscriptionStatus.choices).keys())}'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
-            if field == 'billing_interval' and value not in dict(BillingInterval.choices):
-                return Response(
-                    {'detail': f'Invalid billing_interval: {value}. Must be one of: {list(dict(BillingInterval.choices).keys())}'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
-            # Handle datetime fields
-            if field in ['trial_end', 'cancel_at', 'last_3day_reminder_sent', 'last_1day_reminder_sent']:
-                if value:
-                    try:
-                        from django.utils.dateparse import parse_datetime
-                        parsed_value = parse_datetime(value)
-                        if parsed_value is None:
-                            return Response(
-                                {'detail': f'Invalid datetime format for {field}. Use ISO 8601 format (e.g., 2026-02-05T10:30:00Z)'},
-                                status=status.HTTP_400_BAD_REQUEST
-                            )
-                        value = parsed_value
-                    except Exception as e:
-                        return Response(
-                            {'detail': f'Error parsing {field}: {str(e)}'},
-                            status=status.HTTP_400_BAD_REQUEST
-                        )
-            
-            # Validate integer fields
-            if field in ['no_of_licenses', 'pending_number_of_licenses']:
-                try:
-                    value = int(value)
-                    if value < 1:
-                        return Response(
-                            {'detail': f'{field} must be at least 1'},
-                            status=status.HTTP_400_BAD_REQUEST
-                        )
-                except (ValueError, TypeError):
-                    return Response(
-                        {'detail': f'{field} must be a valid integer'},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-            
-            # Validate boolean fields
-            if field == 'cancel_at_period_end':
-                if not isinstance(value, bool):
-                    return Response(
-                        {'detail': f'{field} must be a boolean'},
-                        status=status.HTTP_400_BAD_REQUEST
-                    )
-            
-            # Set the value
-            setattr(subscription, field, value)
-            updated_fields.append(field)
-    
-    # Save if any fields were updated
-    if updated_fields:
-        updated_fields.append('updated_at')
-        subscription.save(update_fields=updated_fields)
+
+    # Get canceled_at from payload or default to now
+    canceled_at = request.data.get("canceled_at")
+    if canceled_at:
+        try:
+            canceled_at = timezone.datetime.fromisoformat(
+                canceled_at.replace("Z", "+00:00")
+            )
+        except ValueError:
+            return Response(
+                {"detail": "Invalid canceled_at format. Use ISO 8601 format."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
     else:
-        return Response(
-            {'detail': 'No valid fields provided for update'},
-            status=status.HTTP_400_BAD_REQUEST
-        )
-    
-    # Prepare response
+        canceled_at = timezone.now()
+
+    # Update subscription
+    subscription.status = SubscriptionStatus.CANCELED
+    subscription.cancel_at = canceled_at
+    subscription.cancel_at_period_end = False
+    subscription.save(update_fields=["status", "cancel_at", "cancel_at_period_end", "updated_at"])
+
     return Response(
         {
-            'message': 'Subscription updated successfully',
-            'subscription': {
-                'id': str(subscription.id),
-                'profile_id': str(subscription.profile.id),
-                'plan_name': subscription.plan_name,
-                'no_of_licenses': subscription.no_of_licenses,
-                'status': subscription.status,
-                'billing_interval': subscription.billing_interval,
-                'pending_billing_interval': subscription.pending_billing_interval,
-                'pending_number_of_licenses': subscription.pending_number_of_licenses,
-                'stripe_subscription_id': subscription.stripe_subscription_id,
-                'setup_intent_id': subscription.setup_intent_id,
-                'trial_end': subscription.trial_end.isoformat() if subscription.trial_end else None,
-                'cancel_at': subscription.cancel_at.isoformat() if subscription.cancel_at else None,
-                'cancel_at_period_end': subscription.cancel_at_period_end,
-                'updated_at': subscription.updated_at.isoformat()
-            },
-            'updated_fields': [f for f in updated_fields if f != 'updated_at']
+            "detail": "Subscription canceled successfully.",
+            "subscription": {
+                "id": str(subscription.id),
+                "status": subscription.status,
+                "canceled_at": subscription.cancel_at.isoformat(),
+            }
         },
         status=status.HTTP_200_OK
     )

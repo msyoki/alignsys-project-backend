@@ -121,11 +121,13 @@ AUTH_PASSWORD_VALIDATORS = [
     {'NAME': 'django.contrib.auth.password_validation.NumericPasswordValidator',},
 ]
 
+import tzlocal
 # Internationalization
 LANGUAGE_CODE = 'en-us'
-TIME_ZONE = 'Africa/Nairobi'
+TIME_ZONE = str(tzlocal.get_localzone())
 USE_I18N = True
 USE_TZ = True
+
 
 # Static and media files
 STATIC_URL = '/static/'

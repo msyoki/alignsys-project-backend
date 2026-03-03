@@ -548,8 +548,6 @@ def humanize_seconds(seconds: int) -> str:
         parts.append(f"{sec} second{'s' if sec != 1 else ''}")
     return " ".join(parts)
 
-
-
 # RANDOM USERNAME GENERATOR
 def generate_unique_username(first_name, last_name):
     base = f"{first_name[0].upper()}{last_name.capitalize()}"
@@ -570,37 +568,37 @@ def determine_subscription_event(subscription, previous_values):
     old_plan = previous_values["plan_name"]
     new_plan = subscription.plan_name
 
-    # 1️⃣ Created
+    # 1️ Created
     if old_status is None:
         return SubscriptionEventType.CREATED
 
-    # 2️⃣ Trial Started
+    # 2️ Trial Started
     if old_status != SubscriptionStatus.TRIALING and new_status == SubscriptionStatus.TRIALING:
         return SubscriptionEventType.TRIAL_STARTED
 
-    # 3️⃣ Activated (trial → active OR incomplete → active)
+    # 3️ Activated (trial → active OR incomplete → active)
     if old_status in [
         SubscriptionStatus.TRIALING,
         SubscriptionStatus.INCOMPLETE
     ] and new_status == SubscriptionStatus.ACTIVE:
         return SubscriptionEventType.ACTIVATED
 
-    # 4️⃣ Reactivated (canceled → active)
+    # 4️ Reactivated (canceled → active)
     if old_status == SubscriptionStatus.CANCELED and new_status == SubscriptionStatus.ACTIVE:
         return SubscriptionEventType.REACTIVATED
 
-    # 5️⃣ Canceled
+    # 5️ Canceled
     if new_status == SubscriptionStatus.CANCELED:
         return SubscriptionEventType.CANCELED
 
-    # 6️⃣ Payment Failed
+    # 6️ Payment Failed
     if new_status in [
         SubscriptionStatus.PAST_DUE,
         SubscriptionStatus.UNPAID
     ]:
         return SubscriptionEventType.PAYMENT_FAILED
 
-    # 7️⃣ Upgrade / Downgrade
+    # 7️ Upgrade / Downgrade
     if old_plan != new_plan:
         # Define ranking logic
         plan_rank = {
@@ -614,7 +612,7 @@ def determine_subscription_event(subscription, previous_values):
         else:
             return SubscriptionEventType.DOWNGRADED
 
-    # 8️⃣ Trial Ended (trial → not trial)
+    # 8️ Trial Ended (trial → not trial)
     if old_status == SubscriptionStatus.TRIALING and new_status != SubscriptionStatus.TRIALING:
         return SubscriptionEventType.TRIAL_ENDED
 

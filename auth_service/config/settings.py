@@ -7,16 +7,16 @@ from pathlib import Path
 from datetime import timedelta
 from dotenv import load_dotenv
 
-CELERY_BROKER_URL = "redis://127.0.0.1:6379/0"
+# CELERY_BROKER_URL = "redis://127.0.0.1:6379/0"
 
-from celery.schedules import crontab
+# from celery.schedules import crontab
 
-CELERY_BEAT_SCHEDULE = {
-    "expire-trials-every-hour": {
-        "task": "accounts.tasks.check_and_expire_trials",
-        "schedule": crontab(minute=0, hour="*"),  # every hour
-    },
-}
+# CELERY_BEAT_SCHEDULE = {
+#     "expire-trials-every-hour": {
+#         "task": "accounts.tasks.check_and_expire_trials",
+#         "schedule": crontab(minute=0, hour="*"),  # every hour
+#     },
+# }
 
 # Load environment variables
 load_dotenv()
@@ -117,9 +117,10 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
+import tzlocal
 # Internationalization
 LANGUAGE_CODE = 'en-us'
-TIME_ZONE = 'UTC'
+TIME_ZONE = str(tzlocal.get_localzone())
 USE_I18N = True
 USE_TZ = True
 

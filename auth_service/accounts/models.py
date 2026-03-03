@@ -144,7 +144,7 @@ class TrialHistory(models.Model):
 class Subscription(models.Model):
     """Subscription model for profiles."""
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
-    profile = models.OneToOneField(Profile, on_delete=models.CASCADE, related_name='subscription')
+    profile = models.ForeignKey(Profile, on_delete=models.CASCADE, related_name='subscriptions')
     stripe_subscription_id = models.CharField(max_length=255, null=True, blank=True)
     plan_name = models.CharField(max_length=20, choices=PlanName.choices)
     no_of_licenses = models.IntegerField(default=1)
@@ -205,6 +205,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     """Custom User model."""
     # id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     email = models.EmailField(unique=True)
+    phone = models.CharField(max_length=10,null=True,blank=True)
     email_verification_token = models.CharField(max_length=64, null=True, blank=True)
     email_verification_token_expires = models.DateTimeField(null=True, blank=True)
     email_verified = models.BooleanField(default=False)
@@ -212,7 +213,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     license_assigned_at = models.DateTimeField(null=True, blank=True)
     password_reset_token = models.CharField(max_length=64, null=True, blank=True)
     password_reset_token_expires = models.DateTimeField(null=True, blank=True)
-    username = models.CharField(max_length=255, unique=True,null=True, blank=True)
+    username = models.CharField(max_length=255, null=True, blank=True)
     first_name = models.CharField(max_length=255)
     last_name = models.CharField(max_length=255)
     is_domain_user = models.BooleanField(default=False)

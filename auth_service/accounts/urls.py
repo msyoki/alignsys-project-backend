@@ -30,8 +30,8 @@ urlpatterns = [
     path('webhook/stripe-sync-subscription', views.stripe_sync_subscription_webhook, name='stripe-sync-subscription'),
     path('subscription/by-profile/<uuid:profile_id>/', views.get_subscriptions_by_profile, name='subscriptions-by-profile-id'),
     path('subscription/update-trial-billing-preference/<uuid:subscription_id>/', views.update_trial_billing_preferences_stripe, name='update-trial-billing-preferences'),
-
-
+    path('subscription/cancel/<uuid:subscription_id>/', views.cancel_subscription_view, name='cancel-subscription'),    
+ 
     # =========================
     # PROFILE AND SUBSCRIPTION UPDATES (Public - No Auth)
     # =========================

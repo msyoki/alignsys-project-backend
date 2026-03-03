@@ -37,7 +37,7 @@ class Command(BaseCommand):
         try:
             # Create profile
             profile = Profile.objects.create(
-                name="Alignsys Superadmin",
+                name="Alignsys Corp",
                 type=UserType.ORGANIZATION,
                 org_name="System",
             )
