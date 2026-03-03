@@ -189,12 +189,12 @@ Authenticate a user with email/username and password. Returns JWT tokens.
     examples=[
         OpenApiExample(
             "Login with Email",
-            value={"username": "john.doe@example.com", "password": "MySecurePassword123!"},
+            value={"email_or_username": "john.doe@example.com", "password": "MySecurePassword123!"},
             request_only=True
         ),
         OpenApiExample(
             "Login with Username",
-            value={"username": "johndoe", "password": "MySecurePassword123!"},
+            value={"email_or_username": "johndoe", "password": "MySecurePassword123!"},
             request_only=True
         )
     ],
