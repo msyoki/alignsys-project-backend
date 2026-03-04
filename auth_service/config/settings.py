@@ -207,6 +207,11 @@ JWT_REFRESH_EXPIRE_DAYS = int(os.getenv('REFRESH_TOKEN_EXPIRE_DAYS', '30'))
 # Domain Auth
 DOMAIN_AUTH_URL = os.getenv('DOMAIN_AUTH_URL')
 
+
+# Trial Management Webhook Settings
+AUTO_ACTIVATE_URL = os.getenv('AUTO_ACTIVATE_URL')
+WEBHOOK_SHARED_SECRET = os.getenv('WEBHOOK_SHARED_SECRET')
+
 # Custom User Model
 AUTH_USER_MODEL = 'accounts.User'
 

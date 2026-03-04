@@ -160,6 +160,13 @@ class Subscription(models.Model):
     last_1day_reminder_sent = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
+    current_period_end = models.DateTimeField(null=True, blank=True)
+
+
+    def save(self, *args, **kwargs):
+        if self.status == SubscriptionStatus.TRIALING:
+            self.billing_interval = BillingInterval.NONE
+        super().save(*args, **kwargs)
    
 
     class Meta:

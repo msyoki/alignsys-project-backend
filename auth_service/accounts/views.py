@@ -60,7 +60,9 @@ from .serializers import (
     PasswordResetConfirmSerializer,
     PasswordResetRequestResponseSerializer,
     PasswordResetConfirmResponseSerializer,
-    CustomTokenObtainPairSerializer
+    CustomTokenObtainPairSerializer,
+    CancelSubscriptionRequestSerializer,
+    CancelSubscriptionResponseSerializer
 )
 from .models import (
     Profile,
@@ -73,15 +75,9 @@ from .models import (
 )
 from .utils import (
     get_user_by_identifier, 
-    create_org_user, 
-    build_register_response, 
-    validate_jwt_token,
     normalize_plan_name,
-    normalize_billing_interval,
     can_start_trial,
     create_trial_history,
-    convert_trial_to_active,
-    cancel_trial,
     get_trial_status,
     get_trial_history,
     generate_unique_username,
@@ -474,7 +470,6 @@ Register a new user account (Individual or Organization).
     ],
     tags=["Authentication"],
 )
-
 @api_view(['POST'])
 @permission_classes([AllowAny])
 @transaction.atomic
@@ -1666,6 +1661,11 @@ def create_subscription_view(request):
     
     # Create Subscription
     subscription = Subscription.objects.create(**subscription_data)
+
+    # Create trial history if this is a trial subscription
+    if subscription.status == SubscriptionStatus.TRIALING:
+        create_trial_history(profile, plan_name, subscription)
+
     
     # Assign license to the newly created user
     try:
@@ -2270,8 +2270,6 @@ Update a subscription using either the Stripe subscription ID or the internal su
 
 **Authentication:** None required (public endpoint)
 
-
-
 **Request Body:**
 - `stripe_subscription_id` (string, required): Stripe subscription ID
 - `subscription_id` (string, required): Subscription ID - UUID
@@ -2286,8 +2284,6 @@ Update a subscription using either the Stripe subscription ID or the internal su
     - `trial_end` (datetime): Trial end date
     - `cancel_at` (datetime): Scheduled cancellation date
     - `cancel_at_period_end` (boolean): Cancel at period end
-
-
 
 ---
 
@@ -2481,8 +2477,128 @@ def stripe_sync_subscription_webhook(request):
 
     return Response(response_data, status=status.HTTP_200_OK)
 
+@extend_schema(
+    summary="Cancel Subscription",
+    description=(
+        "Cancels a subscription belonging to the authenticated user.\n\n"
+        "### Use Cases:\n"
+        "1. User manually cancels trial before it ends.\n"
+        "2. System cancels existing trial before creating a new subscription.\n\n"
+        "If `canceled_at` is not provided, the current server time will be used."
+    ),
+    request=CancelSubscriptionRequestSerializer,
+    responses={
+        200: OpenApiResponse(
+            response=CancelSubscriptionResponseSerializer,
+            description="Subscription canceled successfully."
+        ),
+        400: OpenApiResponse(
+            description="Invalid request or subscription already canceled."
+        ),
+        404: OpenApiResponse(
+            description="Subscription not found."
+        ),
+    },
+    parameters=[
+        OpenApiParameter(
+            name="subscription_id",
+            type=OpenApiTypes.UUID,
+            location=OpenApiParameter.PATH,
+            required=True,
+            description="UUID of the subscription to cancel."
+        ),
+    ],
+    examples=[
+        OpenApiExample(
+            "Cancel With Timestamp",
+            value={
+                "canceled_at": "2026-03-04T10:30:00Z"
+            },
+            request_only=True,
+        ),
+        OpenApiExample(
+            "Successful Response",
+            value={
+                "detail": "Subscription canceled successfully.",
+                "subscription": {
+                    "id": "b6a1e7c1-2f4a-4d8a-9b9a-123456789abc",
+                    "status": "canceled",
+                    "canceled_at": "2026-03-04T10:30:00Z"
+                }
+            },
+            response_only=True,
+        ),
+    ],
+    tags=["Subscription Management"],
+)
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+@transaction.atomic
+def cancel_subscription_view(request, subscription_id):
+    """
+    Cancel a subscription.
 
+    Used when:
+    1. User manually cancels trial before it ends.
+    2. System cancels existing trial before creating a new subscription.
+    """
+  
+    profile = request.user.profile
 
+    # Ensure subscription belongs to logged-in user's profile
+    try:
+        subscription = Subscription.objects.get(
+            id=subscription_id,
+            profile=profile
+        )
+    except Subscription.DoesNotExist:
+        return Response(
+            {"detail": "Subscription not found."},
+            status=status.HTTP_404_NOT_FOUND
+        )
+
+    # Prevent canceling already canceled subscriptions
+    if subscription.status in [
+        SubscriptionStatus.CANCELED,
+        SubscriptionStatus.INCOMPLETE_EXPIRED,
+    ]:
+        return Response(
+            {"detail": "Subscription is already canceled."},
+            status=status.HTTP_400_BAD_REQUEST
+        )
+
+    # Get canceled_at from payload or default to now
+    canceled_at = request.data.get("canceled_at")
+    if canceled_at:
+        try:
+            canceled_at = timezone.datetime.fromisoformat(
+                canceled_at.replace("Z", "+00:00")
+            )
+        except ValueError:
+            return Response(
+                {"detail": "Invalid canceled_at format. Use ISO 8601 format."},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+    else:
+        canceled_at = timezone.now()
+
+    # Update subscription
+    subscription.status = SubscriptionStatus.CANCELED
+    subscription.cancel_at = canceled_at
+    subscription.cancel_at_period_end = False
+    subscription.save(update_fields=["status", "cancel_at", "cancel_at_period_end", "updated_at"])
+
+    return Response(
+        {
+            "detail": "Subscription canceled successfully.",
+            "subscription": {
+                "id": str(subscription.id),
+                "status": subscription.status,
+                "canceled_at": subscription.cancel_at.isoformat(),
+            }
+        },
+        status=status.HTTP_200_OK
+    )
 
 
 # ============================================================================
@@ -2661,7 +2777,6 @@ def trial_eligibility_view(request):
     
     return Response(eligibility, status=status.HTTP_200_OK)
 
-
 @extend_schema(
     summary="Get Trial Status",
     description="""
@@ -2814,215 +2929,6 @@ def trial_history_view(request):
     }, status=status.HTTP_200_OK)
 
 
-@extend_schema(
-    summary="Convert Trial to Paid Subscription",
-    description="""
-    Convert an active trial subscription to a paid/active subscription.
-    This endpoint should be called after successful payment processing.
-    
-    **Authentication:** Bearer token required
-    
-    **Features:**
-    - Supports early conversion (before 14 days)
-    - Tracks conversion date and early conversion flag
-    - Sets next billing period to 30 days from conversion
-    - Updates trial history with conversion details
-    
-    **Requirements:**
-    - User must have an active trial subscription
-    - Can be called anytime during trial period
-    
-    **Headers:**
-    - `Authorization`: Bearer <access_token>
-    
-    **Request Body (optional):**
-    - `plan_name` (string, optional): Override plan name if different from current subscription
-    
-    **Response:**
-    - `detail` (string): Success message with conversion type
-    - `subscription` (object): Updated subscription details
-      - `plan_name` (string): Active plan name
-      - `status` (string): "active"
-      - `no_of_licenses` (integer): Number of licenses
-      - `billing_interval` (string): MONTHLY or YEARLY
-      - `current_period_end` (datetime): Next billing date
-    """,
-    request={
-        'application/json': {
-            'type': 'object',
-            'properties': {
-                'plan_name': {
-                    'type': 'string',
-                    'enum': ['FREE_ESIGN', 'ESIGN', 'EDMS_PLUS'],
-                    'description': 'Override plan name (optional)',
-                    'nullable': True
-                }
-            }
-        }
-    },
-    responses={
-        200: OpenApiResponse(
-            description="Trial converted successfully",
-            examples=[
-                OpenApiExample(
-                    'Early Conversion',
-                    value={
-                        'detail': 'Trial converted to active subscription early (after 5 days)',
-                        'subscription': {
-                            'plan_name': 'ESIGN',
-                            'status': 'active',
-                            'no_of_licenses': 1,
-                            'billing_interval': 'MONTHLY',
-                            'current_period_end': '2026-02-20T12:00:00Z'
-                        }
-                    },
-                    response_only=True,
-                ),
-                OpenApiExample(
-                    'Upgrade During Conversion',
-                    value={
-                        'detail': 'Trial converted to active subscription early (after 7 days)',
-                        'subscription': {
-                            'plan_name': 'EDMS_PLUS',
-                            'status': 'active',
-                            'no_of_licenses': 1,
-                            'billing_interval': 'MONTHLY',
-                            'current_period_end': '2026-02-20T12:00:00Z'
-                        }
-                    },
-                    response_only=True,
-                )
-            ]
-        ),
-        400: OpenApiResponse(
-            description="Subscription is not on trial",
-            examples=[
-                OpenApiExample(
-                    'Not On Trial',
-                    value={'detail': 'Subscription is not currently on trial'},
-                    response_only=True,
-                )
-            ]
-        ),
-        401: OpenApiResponse(description="Invalid or missing token"),
-    },
-    examples=[
-        OpenApiExample(
-            'Convert Current Plan',
-            value={},
-            request_only=True,
-        ),
-        OpenApiExample(
-            'Convert and Upgrade',
-            value={
-                'plan_name': 'EDMS_PLUS'
-            },
-            request_only=True,
-        ),
-    ],
-    tags=['Trial Management']
-)
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-@transaction.atomic
-def convert_trial_view(request):
-    """Trial Conversion Endpoint"""
-    auth = JWTAuthentication()
-    auth_result = auth.authenticate(request)
-    if not auth_result:
-        return Response({'detail': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
-
-    current_user = auth_result[0]
-    profile = current_user.profile
-    
-    plan_name = request.data.get('plan_name', None)
-
-    success, message, subscription = convert_trial_to_active(profile, plan_name)
-    
-    if not success:
-        return Response(
-            {'detail': message},
-            status=status.HTTP_400_BAD_REQUEST
-        )
-
-    return Response({
-        'detail': message,
-        'subscription': {
-            'plan_name': subscription.plan_name,
-            'status': subscription.status,
-            'no_of_licenses': subscription.no_of_licenses,
-            'billing_interval': subscription.billing_interval,
-            'current_period_end': subscription.current_period_end,
-        }
-    }, status=status.HTTP_200_OK)
-
-
-@extend_schema(
-    summary="Cancel Trial",
-    description="""
-    Cancel an active trial without converting to a paid subscription.
-    Sets subscription status to CANCELED and marks trial as ended.
-    
-    **Authentication:** Bearer token required
-    
-    **Headers:**
-    - `Authorization`: Bearer <access_token>
-    
-    **Response:**
-    - `detail` (string): Success message
-    """,
-    request=None,
-    responses={
-        200: OpenApiResponse(
-            description="Trial cancelled successfully",
-            examples=[
-                OpenApiExample(
-                    'Trial Cancelled',
-                    value={'detail': 'Trial cancelled successfully'},
-                    response_only=True,
-                )
-            ]
-        ),
-        400: OpenApiResponse(
-            description="Subscription is not on trial",
-            examples=[
-                OpenApiExample(
-                    'Not On Trial',
-                    value={'detail': 'Subscription is not currently on trial'},
-                    response_only=True,
-                )
-            ]
-        ),
-        401: OpenApiResponse(description="Invalid or missing token"),
-    },
-    tags=['Trial Management']
-)
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-@transaction.atomic
-def cancel_trial_view(request):
-    """Trial Cancellation Endpoint"""
-    auth = JWTAuthentication()
-    auth_result = auth.authenticate(request)
-    if not auth_result:
-        return Response({'detail': 'Unauthorized'}, status=status.HTTP_401_UNAUTHORIZED)
-
-    current_user = auth_result[0]
-    profile = current_user.profile
-
-    success, message = cancel_trial(profile)
-    
-    if not success:
-        return Response(
-            {'detail': message},
-            status=status.HTTP_400_BAD_REQUEST
-        )
-
-    return Response({
-        'detail': message
-    }, status=status.HTTP_200_OK)
-
-
 
 # ============================================================================
 # SECTION 5: ORGANIZATION MANAGEMENT VIEWS (Admin Only)
@@ -3104,7 +3010,6 @@ to their organization profile.
     ],
     tags=["Organization Management"],
 )
-
 @api_view(['POST'])
 @permission_classes([IsAuthenticated])
 @transaction.atomic
@@ -3623,7 +3528,6 @@ def get_stripe_intent_id_view(request):
         status=status.HTTP_200_OK
     )
 
-
 @extend_schema(
     summary="Update Stripe Subscription ID",
     description="""
@@ -3728,72 +3632,3 @@ def update_stripe_subscription_id_view(request):
     }, status=status.HTTP_200_OK)
 
 
-
-@api_view(['POST'])
-@permission_classes([IsAuthenticated])
-@transaction.atomic
-def cancel_subscription_view(request, subscription_id):
-    """
-    Cancel a subscription.
-
-    Used when:
-    1. User manually cancels trial before it ends.
-    2. System cancels existing trial before creating a new subscription.
-    """
-
-    profile = request.user.profile
-
-    # Ensure subscription belongs to logged-in user's profile
-    try:
-        subscription = Subscription.objects.get(
-            id=subscription_id,
-            profile=profile
-        )
-    except Subscription.DoesNotExist:
-        return Response(
-            {"detail": "Subscription not found."},
-            status=status.HTTP_404_NOT_FOUND
-        )
-
-    # Prevent canceling already canceled subscriptions
-    if subscription.status in [
-        SubscriptionStatus.CANCELED,
-        SubscriptionStatus.INCOMPLETE_EXPIRED,
-    ]:
-        return Response(
-            {"detail": "Subscription is already canceled."},
-            status=status.HTTP_400_BAD_REQUEST
-        )
-
-    # Get canceled_at from payload or default to now
-    canceled_at = request.data.get("canceled_at")
-    if canceled_at:
-        try:
-            canceled_at = timezone.datetime.fromisoformat(
-                canceled_at.replace("Z", "+00:00")
-            )
-        except ValueError:
-            return Response(
-                {"detail": "Invalid canceled_at format. Use ISO 8601 format."},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-    else:
-        canceled_at = timezone.now()
-
-    # Update subscription
-    subscription.status = SubscriptionStatus.CANCELED
-    subscription.cancel_at = canceled_at
-    subscription.cancel_at_period_end = False
-    subscription.save(update_fields=["status", "cancel_at", "cancel_at_period_end", "updated_at"])
-
-    return Response(
-        {
-            "detail": "Subscription canceled successfully.",
-            "subscription": {
-                "id": str(subscription.id),
-                "status": subscription.status,
-                "canceled_at": subscription.cancel_at.isoformat(),
-            }
-        },
-        status=status.HTTP_200_OK
-    )

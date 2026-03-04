@@ -272,3 +272,16 @@ class PasswordChangeSerializer(serializers.Serializer):
             })
 
         return attrs
+
+
+
+class CancelSubscriptionRequestSerializer(serializers.Serializer):
+    canceled_at = serializers.DateTimeField(
+        required=False,
+        help_text="Optional ISO 8601 datetime. Defaults to current time if not provided."
+    )
+
+
+class CancelSubscriptionResponseSerializer(serializers.Serializer):
+    detail = serializers.CharField()
+    subscription = serializers.DictField()
