@@ -126,10 +126,11 @@ Authenticate a user with email/username and password. Returns JWT tokens.
 
 **Authentication:** None required (public endpoint)
 
+---
 **Request Body:**
-- `username` (string, required): Email address or username
+- `email_or_username` (string, required): Email address or username
 - `password` (string, required): User password
-
+---
 **Response:**
 - `access` (string): JWT access token (short-lived, ~15 minutes)
 - `refresh` (string): JWT refresh token (long-lived, ~7 days)

@@ -185,59 +185,65 @@ def normalize_billing_interval(value):
 TRIAL_PERIOD_DAYS = 14
 
 
+
 def can_start_trial(profile, plan_name):
     """
     Check if a profile can start a trial for the given plan.
-    
+
     PLAN RULES:
     1. FREE_ESIGN: Free for life, no trial needed (always allowed)
     2. ESIGN: Can trial if never trialed ESIGN or EDMS_PLUS before
     3. EDMS_PLUS: Can trial if never trialed EDMS_PLUS before (can trial even after ESIGN trial)
-    
+
     TRIAL RULES:
-    - FREE_ESIGN: No trial concept (it's free forever)
-    - ESIGN trial: Can start if no previous ESIGN or EDMS_PLUS trials
-    - EDMS_PLUS trial: Can start if no previous EDMS_PLUS trial (even if used ESIGN trial)
-    - If you trial EDMS_PLUS, you cannot later trial ESIGN (EDMS_PLUS includes ESIGN features)
-    
+    - Cannot start a trial if currently in an active trial
+    - Must respect cooldown (TRIAL_PERIOD_DAYS) for past trials
+    - EDMS_PLUS includes ESIGN features (ESIGN cannot be trialed after EDMS_PLUS)
+
     Args:
         profile: User profile
         plan_name: Plan to check (PlanName enum)
-    
+
     Returns:
         tuple: (can_start: bool, error_message: str or None)
     """
+    # Fetch all trial histories for the profile
     trial_histories = TrialHistory.objects.filter(profile=profile)
-    
+
+    # Check for active trials
+    active_trial = trial_histories.filter(ended_at__isnull=True).first()
+    if active_trial:
+        return False, f"Cannot start a new trial while {active_trial.plan_name} trial is active"
+
+    # Check past trials within cooldown period
+    last_trial = trial_histories.order_by('-started_at').first()
+    if last_trial and last_trial.started_at + timedelta(days=TRIAL_PERIOD_DAYS) > now():
+        return False, f"You must wait {TRIAL_PERIOD_DAYS} days between trials"
+
+    # Flags for past trialed plans
     has_trialed_esign = trial_histories.filter(plan_name=PlanName.ESIGN).exists()
     has_trialed_edms_plus = trial_histories.filter(plan_name=PlanName.EDMS_PLUS).exists()
-    
+
     # FREE_ESIGN - No trial needed, it's free for life
     if plan_name == PlanName.FREE_ESIGN:
         return True, None
-    
+
     # ESIGN trial eligibility
     elif plan_name == PlanName.ESIGN:
-        # Cannot trial ESIGN if already trialed EDMS_PLUS (EDMS_PLUS includes ESIGN)
         if has_trialed_edms_plus:
             return False, "Cannot trial eSign after trialing EDMS+ (EDMS+ includes all eSign features)"
-        
-        # Cannot trial ESIGN if already trialed ESIGN
         if has_trialed_esign:
             return False, "You have already used your eSign trial"
-        
         return True, None
-    
+
     # EDMS_PLUS trial eligibility
     elif plan_name == PlanName.EDMS_PLUS:
-        # Cannot trial EDMS_PLUS if already trialed it
         if has_trialed_edms_plus:
             return False, "You have already used your EDMS+ trial"
-        
-        # CAN trial EDMS_PLUS even if already trialed ESIGN
-        # This allows users to upgrade from ESIGN trial to EDMS_PLUS trial
+        # Can trial EDMS_PLUS even if already trialed ESIGN
         return True, None
-    
+
+    # Catch-all for invalid plans
     return False, "Invalid plan for trial"
 
 
